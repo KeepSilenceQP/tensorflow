@@ -19,7 +19,7 @@ limitations under the License.
 #include <cstring>
 #include <vector>
 
-#include "tensorflow/lite/c/c_api_internal.h"
+#include "tensorflow/lite/c/common.h"
 
 namespace tflite {
 
@@ -89,6 +89,7 @@ int DynamicBuffer::WriteToBuffer(char** buffer) {
   return bytes;
 }
 
+#ifndef TF_LITE_STATIC_MEMORY
 void DynamicBuffer::WriteToTensorAsVector(TfLiteTensor* tensor) {
   auto dims = TfLiteIntArrayCreate(1);
   dims->data[0] = offset_.size() - 1;  // Store number of strings.
@@ -109,6 +110,7 @@ void DynamicBuffer::WriteToTensor(TfLiteTensor* tensor,
                     tensor_buffer, bytes, kTfLiteDynamic, tensor->allocation,
                     tensor->is_variable, tensor);
 }
+#endif  // TF_LITE_STATIC_MEMORY
 
 int GetStringCount(const void* raw_buffer) {
   // The first integers in the raw buffer is the number of strings.

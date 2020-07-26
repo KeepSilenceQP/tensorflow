@@ -140,10 +140,9 @@ class DimensionTest(test_util.TensorFlowTestCase):
         tensor_shape.Dimension(None) == tensor_shape.Dimension(12))
     self.assertIsNone(
         tensor_shape.Dimension(None) == tensor_shape.Dimension(None))
-    self.assertEqual(tensor_shape.Dimension(12), 24.0 / 2)
 
     # None indicates ambiguous comparison, but comparison vs the wrong type
-    # is unambigously False.
+    # is unambiguously False.
     self.assertIsNotNone(tensor_shape.Dimension(None) == 12.99)
     self.assertNotEqual(tensor_shape.Dimension(None), 12.99)
 
@@ -163,12 +162,26 @@ class DimensionTest(test_util.TensorFlowTestCase):
         tensor_shape.Dimension(None) != tensor_shape.Dimension(None))
 
     # None indicates ambiguous comparison, but comparison vs the wrong type
-    # is unambigously False.
+    # is unambiguously False.
     self.assertIsNotNone(tensor_shape.Dimension(None) != 12.99)
     self.assertNotEqual(tensor_shape.Dimension(None), 12.99)
 
     self.assertIsNone(tensor_shape.Dimension(None) != None)  # pylint: disable=g-equals-none
     self.assertNotEqual(tensor_shape.Dimension(12), 12.99)
+
+  def testIsCompatibleWithError(self):
+    with self.assertRaisesRegex(TypeError, "must be integer or None"):
+      tensor_shape.Dimension(42).is_compatible_with([])
+
+    with self.assertRaisesRegex(ValueError, "must be >= 0"):
+      tensor_shape.Dimension(42).is_compatible_with(-1)
+
+  def testMergeWithError(self):
+    with self.assertRaisesRegex(TypeError, "must be integer or None"):
+      tensor_shape.Dimension(42).merge_with([])
+
+    with self.assertRaisesRegex(ValueError, "must be >= 0"):
+      tensor_shape.Dimension(42).merge_with(-1)
 
   def testRepr(self):
     self.assertEqual(repr(tensor_shape.Dimension(7)), "Dimension(7)")
@@ -204,15 +217,15 @@ class DimensionTest(test_util.TensorFlowTestCase):
     two = tensor_shape.Dimension(2)
     message = (r"unsupported operand type\(s\) for /: "
                r"'Dimension' and 'Dimension', please use // instead")
-    with self.assertRaisesRegexp(TypeError, message):
+    with self.assertRaisesRegex(TypeError, message):
       _ = six / two
     message = (r"unsupported operand type\(s\) for /: "
                r"'Dimension' and 'int', please use // instead")
-    with self.assertRaisesRegexp(TypeError, message):
+    with self.assertRaisesRegex(TypeError, message):
       _ = six / 2
     message = (r"unsupported operand type\(s\) for /: "
                r"'int' and 'Dimension', please use // instead")
-    with self.assertRaisesRegexp(TypeError, message):
+    with self.assertRaisesRegex(TypeError, message):
       _ = 6 / two
 
 
@@ -377,7 +390,7 @@ class ShapeTest(test_util.TensorFlowTestCase, parameterized.TestCase):
   def testTruedivFails(self):
     unknown = tensor_shape.Dimension(None)
     self.assertEqual((unknown // unknown).value, None)
-    with self.assertRaisesRegexp(TypeError, r"unsupported operand type"):
+    with self.assertRaisesRegex(TypeError, r"unsupported operand type"):
       unknown / unknown  # pylint: disable=pointless-statement
 
   def testConvertFromProto(self):
@@ -468,8 +481,8 @@ class ShapeTest(test_util.TensorFlowTestCase, parameterized.TestCase):
       _ = unk1 != unk0
 
   def testAsList(self):
-    with self.assertRaisesRegexp(ValueError,
-                                 "not defined on an unknown TensorShape"):
+    with self.assertRaisesRegex(ValueError,
+                                "not defined on an unknown TensorShape"):
       tensor_shape.unknown_shape().as_list()
     self.assertAllEqual([None, None], tensor_shape.unknown_shape(2).as_list())
     self.assertAllEqual([2, None, 4], tensor_shape.TensorShape(

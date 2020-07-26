@@ -30,7 +30,9 @@ limitations under the License.
 #include "tensorflow/core/lib/strings/numbers.h"
 #include "tensorflow/core/lib/strings/str_util.h"
 #include "tensorflow/core/lib/strings/strcat.h"
+#include "tensorflow/core/platform/status.h"
 #include "tensorflow/core/platform/types.h"
+#include "tensorflow/core/protobuf/config.pb.h"
 #include "tensorflow/core/util/device_name_utils.h"
 
 namespace tensorflow {
@@ -123,11 +125,22 @@ void CollectiveParamResolverLocal::CompleteGroupLocal(
     }
   }
   {
+    mutex_lock l(status_mu_);
+    status = status_;
+  }
+  if (!status.ok()) {
+    done(status, nullptr);
+    return;
+  }
+  {
     mutex_lock gr_lock(gr->mu);
     // If there is ever an error associated with a group key, we store the error
     // status and invoke all waiting and future callbacks with this error
     // status.
-    if (gr->status.ok() && !gr->device_set.empty()) {
+    VLOG(2) << "gr device_type=" << gr->group.device_type
+            << " cp device_type=" << cp->group.device_type
+            << " current device=" << device;
+    if (gr->status.ok()) {
       // Check for consistency with existing GroupRec.
       if (cp->group.device_type != gr->group.device_type) {
         gr->status = errors::Internal(
@@ -176,12 +189,6 @@ void CollectiveParamResolverLocal::CompleteGroupLocal(
                     << (gr->group.group_size - gr->device_set.size());
           }
         }
-      } else {
-        // Repeated device in a group.  This may be because of control flow or
-        // it may be a group configuration error.
-        LOG(WARNING) << "Collective op " << cp->name
-                     << " got duplicate CompleteGroup calls for group "
-                     << cp->group.group_key << " and device " << device;
       }
     }
 
@@ -510,7 +517,7 @@ void CollectiveParamResolverLocal::InitInstanceSharedParams(
       ir->shared.instance.task_names,    // NOLINT
       attributes,
       [this, gr, cp, ir, attributes, done](const Status& s)
-          EXCLUSIVE_LOCK_FUNCTION(ir->out_mu) {
+          TF_EXCLUSIVE_LOCK_FUNCTION(ir->out_mu) {
             // Then we recover the lock in the callback thread that will hold it
             // through the rest of the call chain.  Signal the cv now, any
             // waiting threads will wake only when out_mu is released later.
@@ -600,6 +607,16 @@ void CollectiveParamResolverLocal::FindInstanceRec(
       instance_table_[cp->instance.instance_key].reset(irec);
     }
   }
+  Status status;
+  {
+    mutex_lock l(status_mu_);
+    status = status_;
+  }
+  if (!status.ok()) {
+    mutex_lock il(irec->out_mu);
+    irec->WaitForOutMu(il);
+    irec->status = status;
+  }
   if (exit_outside_locks) {
     CallbackWithStatus(done, irec);
     return;
@@ -610,7 +627,7 @@ void CollectiveParamResolverLocal::FindInstanceRec(
 
 void CollectiveParamResolverLocal::CallInitInstanceSharedParams(
     const GroupRec* gr, const CollectiveParams* cp, InstanceRec* ir,
-    const InstanceRecCallback& done) NO_THREAD_SAFETY_ANALYSIS {
+    const InstanceRecCallback& done) TF_NO_THREAD_SAFETY_ANALYSIS {
   // This function serves merely to make a function call that should
   // be thread/mutex safe but violates the simple model applied by
   // static analysis, so we turn off analysis only within this
@@ -633,7 +650,7 @@ void CollectiveParamResolverLocal::CallInitInstanceSharedParams(
   ir->known.resize(cp->group.group_size, false);
   InitInstanceSharedParams(
       gr, cp, ir,
-      [this, ir, done](const Status& s) UNLOCK_FUNCTION(ir->out_mu) {
+      [this, ir, done](const Status& s) TF_UNLOCK_FUNCTION(ir->out_mu) {
         DCHECK(ir->out_mu_available);
         ir->status.Update(s);
         ir->out_mu.unlock();
@@ -792,9 +809,12 @@ void CollectiveParamResolverLocal::WaitForGroup(InstanceRec* ir,
                                                 bool is_source,
                                                 const IRConsumer& f) {
   std::vector<IRConsumer> ready_waiters;
-  {
+  do {
     mutex_lock l(ir->out_mu);
     ir->WaitForOutMu(l);
+    if (!ir->status.ok()) {
+      break;
+    }
     CHECK_EQ(cp->group.group_size, ir->known.size());
     CHECK_GE(cp->default_rank, 0);
     if (!ir->known[cp->default_rank]) {
@@ -830,10 +850,61 @@ void CollectiveParamResolverLocal::WaitForGroup(InstanceRec* ir,
     if (!ir->known_waiters.empty()) {
       ready_waiters = std::move(ir->known_waiters);
     }
-  }
+  } while (false);
   f(ir);
   for (auto& f : ready_waiters) {
     f(ir);
+  }
+}
+
+void CollectiveParamResolverLocal::StartAbort(const Status& s) {
+  {
+    mutex_lock l(status_mu_);
+    if (!status_.ok()) {
+      VLOG(1) << "CollectiveParamResolverLocal already aborted. Ignoring "
+                 "subsequent abortion with status: "
+              << s;
+      return;
+    }
+    status_ = s;
+  }
+  StartAbortLocal(s);
+}
+
+void CollectiveParamResolverLocal::StartAbortLocal(const Status& s) {
+  {
+    mutex_lock l(group_mu_);
+    for (const auto& item : group_table_) {
+      GroupRec* gr = item.second.get();
+      std::vector<StatusCallback> waiting;
+      {
+        mutex_lock gl(gr->mu);
+        gr->status = s;
+        waiting.swap(gr->waiting);
+      }
+      for (const StatusCallback& done : waiting) {
+        done(s);
+      }
+    }
+  }
+  std::vector<InstanceRec*> instances;
+  {
+    mutex_lock l(instance_mu_);
+    for (const auto& item : instance_table_) {
+      instances.push_back(item.second.get());
+    }
+  }
+  for (InstanceRec* ir : instances) {
+    std::vector<IRConsumer> known_waiters;
+    {
+      mutex_lock il(ir->out_mu);
+      ir->WaitForOutMu(il);
+      ir->status = s;
+      known_waiters.swap(ir->known_waiters);
+    }
+    for (const IRConsumer& done : known_waiters) {
+      done(ir);
+    }
   }
 }
 

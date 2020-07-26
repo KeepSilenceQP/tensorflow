@@ -76,14 +76,18 @@ class HloCostAnalysis : public ConstDfsHloVisitor {
   Status HandleFft(const HloInstruction* fft) override;
   Status HandleTriangularSolve(const HloInstruction* hlo) override;
   Status HandleCholesky(const HloInstruction* hlo) override;
+  Status HandleAllGather(const HloInstruction* hlo) override;
   Status HandleAllReduce(const HloInstruction* crs) override;
   Status HandleAllToAll(const HloInstruction* hlo) override;
   Status HandleCollectivePermute(const HloInstruction* hlo) override;
+  Status HandleCollectivePermuteStart(const HloInstruction* hlo) override;
+  Status HandleCollectivePermuteDone(const HloInstruction* hlo) override;
   Status HandleReplicaId(const HloInstruction* hlo) override;
   Status HandlePartitionId(const HloInstruction* hlo) override;
   Status HandleInfeed(const HloInstruction* infeed) override;
   Status HandleOutfeed(const HloInstruction* outfeed) override;
   Status HandleRng(const HloInstruction* random) override;
+  Status HandleRngBitGenerator(const HloInstruction* random) override;
   Status HandleRngGetAndUpdateState(const HloInstruction* random) override;
   Status HandleReverse(const HloInstruction* reverse) override;
   Status HandleSort(const HloInstruction* sort) override;
@@ -123,6 +127,10 @@ class HloCostAnalysis : public ConstDfsHloVisitor {
   Status Preprocess(const HloInstruction* hlo) override;
   Status Postprocess(const HloInstruction* hlo) override;
 
+  // Decorates shape_size_ by returning 0 immediately if the shape does not have
+  // a layout.
+  int64 GetShapeSize(const Shape& shape) const;
+
   // Set the rates used to calculate the time taken by the computation. These
   // need to be set before visiting starts.
   void set_flops_per_second(float value) {
@@ -145,16 +153,33 @@ class HloCostAnalysis : public ConstDfsHloVisitor {
   // if the HLO was not found to have a cost in the analysis.
   //
   // Note that the cost for sub HLO instructions are also returned if asked. For
-  // example, body and condidition of a while, fused instructions within a
+  // example, body and condition of a while, fused instructions within a
   // fusion, or the add instruction of a reduce.
   int64 flop_count(const HloInstruction& hlo) const;
   int64 transcendental_count(const HloInstruction& hlo) const;
   int64 bytes_accessed(const HloInstruction& hlo) const;
+  int64 operand_bytes_accessed(const HloInstruction& hlo, int64 operand_num,
+                               ShapeIndex index = {}) const;
+  int64 output_bytes_accessed(const HloInstruction& hlo,
+                              ShapeIndex index = {}) const;
   float optimal_seconds(const HloInstruction& hlo) const;
+
+  // Get bytes read/written by this HLO. If memory_space is provided, it returns
+  // the bytes read/written from/to the given memory space only.
+  int64 GetBytesRead(const HloInstruction& hlo,
+                     absl::optional<int64> memory_space = absl::nullopt) const;
+  int64 GetBytesWritten(
+      const HloInstruction& hlo,
+      absl::optional<int64> memory_space = absl::nullopt) const;
 
   const Properties& properties() const { return properties_sum_; }
   const float property(const string& key) const {
     return GetProperty(key, properties());
+  }
+
+  // Returns the specified per-second rate used by cost analysis.
+  const float per_second_rate(const string& key) const {
+    return GetProperty(key, per_second_rates_);
   }
 
  protected:
@@ -190,13 +215,24 @@ class HloCostAnalysis : public ConstDfsHloVisitor {
   static float GetPropertyForHlo(const HloInstruction& hlo, const string& key,
                                  const HloToProperties& hlo_to_properties);
 
-  // Decorates shape_size_ by returning 0 immediately if the shape does not have
-  // a layout.
-  int64 GetShapeSize(const Shape& shape) const;
-
   // Traverses a fusion operand to find the actual bytes accessed by the fusion
   // node.
   int64 FusionParameterReadBytes(const HloInstruction* hlo) const;
+
+  // Set bytes accessed by the specified operand and shape index.
+  void SetOperandBytesAccessed(int64 operand_num, float value);
+  void SetOperandBytesAccessed(int64 operand_num, ShapeIndex index,
+                               float value);
+
+  // Set bytes accessed by the output at the shape index.
+  void SetOutputBytesAccessed(float value);
+  void SetOutputBytesAccessed(ShapeIndex index, float value);
+
+  // Return the key that is used to index into Properties for the specified
+  // input/output at the shape index.
+  static std::string GetOperandBytesAccessedKey(int64 operand_num,
+                                                ShapeIndex index = {});
+  static std::string GetOutputBytesAccessedKey(ShapeIndex index = {});
 
   // Function which computes the size of the top-level of a given shape (not
   // including nested elements, if any). If null then bytes_accessed methods

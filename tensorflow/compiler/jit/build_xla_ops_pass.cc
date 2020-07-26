@@ -34,6 +34,7 @@ limitations under the License.
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
 #include "tensorflow/compiler/xla/status_macros.h"
 #include "tensorflow/core/common_runtime/function.h"
+#include "tensorflow/core/common_runtime/graph_constructor.h"
 #include "tensorflow/core/common_runtime/optimization_registry.h"
 #include "tensorflow/core/framework/graph_def_util.h"
 #include "tensorflow/core/framework/memory_types.h"
@@ -41,7 +42,6 @@ limitations under the License.
 #include "tensorflow/core/framework/node_def_util.h"
 #include "tensorflow/core/graph/algorithm.h"
 #include "tensorflow/core/graph/graph.h"
-#include "tensorflow/core/graph/graph_constructor.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/lib/hash/hash.h"
 #include "tensorflow/core/public/version.h"
@@ -157,9 +157,9 @@ void MergeOutgoingDataEdges(const Scope& s, Node* old_node, Node* new_node,
         new_output = check_numerics_op;
       }
 
-      ops::Merge merge_op(s.WithOpName("merge_oidx_", oidx),
-                          {Output(old_node, oidx), new_output});
-      merged_output = merged_outputs[oidx] = merge_op.output;
+      ops::_XlaMerge xla_merge_op(s.WithOpName("merge_oidx_", oidx),
+                                  Output(old_node, oidx), new_output);
+      merged_output = merged_outputs[oidx] = xla_merge_op.output;
     }
 
     Node* dst = e->dst();
